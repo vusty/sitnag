@@ -19,9 +19,10 @@ const (
 	Long
 )
 
-// Labels are the button captions.
+// Labels are the button captions and the heading over the fact.
 type Labels struct {
 	Start, Short, Long string
+	FactHeading        string
 }
 
 // Ask is the reminder. With Fact set it takes the urgent look: red, and the
@@ -592,7 +593,7 @@ func (w *Window) drawText(dc uintptr) {
 		} else {
 			w.text(dc, a.Caption, w.fonts.text, soft, in(margin, 82, right, 116), dtSingleLine|dtEllipsis)
 			p := factPanel
-			w.text(dc, "ПОКА ТЫ СИДИШЬ", w.fonts.factHead, rgb(0xFCA5A5), in(int(p.left)+36, int(p.top)+18, int(p.right)-24, int(p.top)+42), dtSingleLine)
+			w.text(dc, w.labels.FactHeading, w.fonts.factHead, rgb(0xFCA5A5), in(int(p.left)+36, int(p.top)+18, int(p.right)-24, int(p.top)+42), dtSingleLine)
 			w.text(dc, a.Fact, w.fonts.fact, white, in(int(p.left)+36, int(p.top)+46, int(p.right)-28, int(p.bottom)-14), dtWordBreak)
 		}
 		th := w.theme()

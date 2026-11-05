@@ -32,6 +32,10 @@ var icons = map[Icon][]byte{Work: iconWork, Ask: iconAsk, Break: iconBreak}
 
 // Options wires the tray to the rest of the tool.
 type Options struct {
+	// Quit is the caption of the menu item that exits.
+	Quit string
+	// Status is the first status line, until the tool sets its own.
+	Status string
 	// OnReady runs once the icon exists; Set is safe to call from then on.
 	OnReady func()
 	// OnQuit runs after the tray closes.
@@ -74,12 +78,12 @@ func ready(o Options) {
 	item := systray.AddMenuItem("", "")
 	item.Disable()
 	systray.AddSeparator()
-	quit := systray.AddMenuItem("Выход", "")
+	quit := systray.AddMenuItem(o.Quit, "")
 
 	mu.Lock()
 	statusItem = item
 	mu.Unlock()
-	Set(Work, "считаю время за компом")
+	Set(Work, o.Status)
 
 	go func() {
 		<-quit.ClickedCh

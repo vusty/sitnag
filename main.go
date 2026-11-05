@@ -50,6 +50,7 @@ func run(args []string) error {
 	cfg := sit.DefaultConfig()
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	logPath := fs.String("log", "", "append the log to this file instead of stdout")
+	langFlag := fs.String("lang", "auto", "auto, ru or en; auto follows the first language in the Windows language list")
 	fs.DurationVar(&cfg.RemindAfter, "remind", cfg.RemindAfter, "time at the computer before the reminder")
 	fs.DurationVar(&cfg.HardLimit, "limit", cfg.HardLimit, "past this only the short snooze is offered")
 	fs.DurationVar(&cfg.Away, "away", cfg.Away, "no input this long counts as a break")
@@ -66,6 +67,12 @@ func run(args []string) error {
 			return fmt.Errorf("-%s must be positive, got %v", name, d)
 		}
 	}
+
+	lang, err := pickLanguage(*langFlag)
+	if err != nil {
+		return err
+	}
+	t = lang
 
 	// Autostarted there is no console, so a log file is the only way to see
 	// afterwards what the tool thought was happening.
@@ -91,17 +98,20 @@ func run(args []string) error {
 	win.DPIAware()
 	choices := make(chan win.Choice, 4)
 	w, err := win.Open(choices, win.Labels{
-		Start: "Начать разминку",
-		Short: "Отложить на " + human(cfg.ShortSnooze),
-		Long:  "Отложить на " + human(cfg.LongSnooze),
+		Start:       t.start,
+		Short:       fmt.Sprintf(t.snooze, human(cfg.ShortSnooze)),
+		Long:        fmt.Sprintf(t.snooze, human(cfg.LongSnooze)),
+		FactHeading: t.factHeading,
 	})
 	if err != nil {
 		return fmt.Errorf("window: %w", err)
 	}
 
-	logf("start: remind after %v, limit %v, away %v, break %v (paused by input within %v), snooze %v/%v",
-		cfg.RemindAfter, cfg.HardLimit, cfg.Away, cfg.Break, cfg.Busy, cfg.ShortSnooze, cfg.LongSnooze)
+	logf("start: remind after %v, limit %v, away %v, break %v (paused by input within %v), snooze %v/%v, language %s",
+		cfg.RemindAfter, cfg.HardLimit, cfg.Away, cfg.Break, cfg.Busy, cfg.ShortSnooze, cfg.LongSnooze, t.lang)
 	tray.Run(tray.Options{
+		Quit:    t.quit,
+		Status:  t.trayStarting,
 		OnReady: func() { go loop(sit.New(cfg), cfg, w, choices) },
 		OnQuit:  func() { logf("quit") },
 	})
@@ -116,7 +126,7 @@ func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Ch
 
 	// Each reminder past the hard limit shows the next fact; the start is
 	// random so a restart does not open on the same one.
-	fact := int(time.Now().Unix()) % len(facts)
+	fact := int(time.Now().Unix()) % len(t.facts)
 	var paused bool
 
 	for {
@@ -125,7 +135,7 @@ func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Ch
 		before := state.Sitting(now)
 		switch state.Tick(now, win.Idle()) {
 		case sit.Ask:
-			fact = (fact + 1) % len(facts)
+			fact = (fact + 1) % len(t.facts)
 			logf("reminder: at the computer for %s", human(state.Sitting(now)))
 			win.Beep(win.Attention)
 		case sit.Left:
@@ -146,7 +156,7 @@ func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Ch
 			}
 			paused = p
 		}
-		render(state, cfg, w, now, facts[fact])
+		render(state, cfg, w, now, t.facts[fact])
 
 		// A press goes straight back round the loop, so the window reacts at
 		// once instead of on the next tick.
@@ -177,65 +187,65 @@ func render(state *sit.State, cfg sit.Config, w *win.Window, now time.Time, fact
 	case sit.Asking:
 		if state.LongAllowed(now) {
 			w.Ask(win.Ask{
-				Title:   "Пора размяться",
+				Title:   t.askTitle,
 				Hero:    human(sat),
-				Caption: "за компом без перерыва. Встань, пройдись, потянись: " + human(cfg.Break) + ", и снова за дело.",
+				Caption: fmt.Sprintf(t.askCaption, human(cfg.Break)),
 				Long:    true,
 			})
 		} else {
 			w.Ask(win.Ask{
-				Title:   "Хватит сидеть",
-				Caption: "За компом уже " + human(sat) + " без перерыва. Отложить можно только на " + human(cfg.ShortSnooze) + ".",
+				Title:   t.urgentTitle,
+				Caption: fmt.Sprintf(t.urgentCaption, human(sat), human(cfg.ShortSnooze)),
 				Fact:    fact,
 			})
 		}
-		tray.Set(tray.Ask, "пора размяться, за компом "+human(sat))
+		tray.Set(tray.Ask, fmt.Sprintf(t.trayAsk, human(sat)))
 	case sit.Breaking:
 		leftD := state.BreakLeft()
 		left := clock(leftD)
 		cd := win.Countdown{
-			Title:    "Разминка",
+			Title:    t.breakTitle,
 			Clock:    left,
-			Note:     "Отсчёт идёт, пока клавиатура и мышь не трогаются.",
+			Note:     t.breakNote,
 			Progress: 1 - float64(leftD)/float64(cfg.Break),
 		}
-		status := "разминка, осталось " + left
+		status := fmt.Sprintf(t.trayBreak, left)
 		if state.BreakPaused() {
-			cd.Title = "Разминка на паузе"
-			cd.Note = "Ты пользуешься компьютером, отсчёт стоит. Отойди, и он пойдёт дальше."
+			cd.Title = t.pausedTitle
+			cd.Note = t.pausedNote
 			cd.Paused = true
-			status = "разминка на паузе: ты за компом, осталось " + left
+			status = fmt.Sprintf(t.trayPaused, left)
 		}
 		w.Countdown(cd)
 		tray.Set(tray.Break, status)
 	default:
 		w.Hide()
 		if sat == 0 {
-			tray.Set(tray.Work, "за компом никого, счёт с нуля")
+			tray.Set(tray.Work, t.trayIdle)
 			return
 		}
-		status := "за компом " + human(sat)
+		status := fmt.Sprintf(t.traySitting, human(sat))
 		if until := state.SnoozedUntil(); until.After(now) {
-			status += ", напомню в " + until.Format("15:04")
+			status += fmt.Sprintf(t.trayReturns, until.Format("15:04"))
 		}
 		tray.Set(tray.Work, status)
 	}
 }
 
-// human renders a duration the way the window speaks: "42 мин", "1 ч 05 мин".
+// human renders a duration the way the window speaks: "42 min", "1 h 05 min".
 // Seconds only show up with test-sized flags.
 func human(d time.Duration) string {
 	if d < time.Minute {
-		return fmt.Sprintf("%d сек", int(d/time.Second))
+		return fmt.Sprintf(t.sec, int(d/time.Second))
 	}
 	m := int(d / time.Minute)
 	switch {
 	case m < 60:
-		return fmt.Sprintf("%d мин", m)
+		return fmt.Sprintf(t.min, m)
 	case m%60 == 0:
-		return fmt.Sprintf("%d ч", m/60)
+		return fmt.Sprintf(t.hour, m/60)
 	default:
-		return fmt.Sprintf("%d ч %02d мин", m/60, m%60)
+		return fmt.Sprintf(t.hourMin, m/60, m%60)
 	}
 }
 

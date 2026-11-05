@@ -35,26 +35,25 @@ func TestRender(t *testing.T) {
 	if err := startGDIPlus(); err != nil {
 		t.Fatal(err)
 	}
-	w := &Window{dpi: 96, labels: Labels{Start: "Начать разминку", Short: "Отложить на 5 мин", Long: "Отложить на 30 мин"}}
+	w := &Window{dpi: 96, labels: Labels{Start: "Start the warm-up", Short: "Snooze 5 min",
+		Long: "Snooze 30 min", FactHeading: "WHILE YOU SIT"}}
 	w.makeFonts()
 
+	// The English strings from lang.go, for the README.
 	views := map[string]view{
-		"1-calm": {kind: asking, ask: Ask{Title: "Пора размяться", Hero: "1 ч 02 мин",
-			Caption: "за компом без перерыва. Встань, пройдись, потянись: 5 мин, и снова за дело.", Long: true}},
-		"2-urgent": {kind: asking, ask: Ask{Title: "Хватит сидеть",
-			Caption: "За компом уже 1 ч 35 мин без перерыва. Отложить можно только на 5 мин.",
-			Fact:    "Икры не качают кровь обратно к сердцу, и она застаивается в венах голеней. Так образуются тромбы: известны случаи тромбоэмболии у геймеров после многочасовых сессий."}},
-		"3-break": {kind: countdown, cd: Countdown{Title: "Разминка", Clock: "3:12",
-			Note: "Отсчёт идёт, пока клавиатура и мышь не трогаются.", Progress: 0.36}},
-		"4-paused": {kind: countdown, cd: Countdown{Title: "Разминка на паузе", Clock: "3:12",
-			Note: "Ты пользуешься компьютером, отсчёт стоит. Отойди, и он пойдёт дальше.", Paused: true, Progress: 0.36}},
+		"1-ask": {kind: asking, ask: Ask{Title: "Time to move", Hero: "1 h 02 min",
+			Caption: "at the computer without a break. Stand up, walk, stretch: 5 min, then back to it.", Long: true}},
+		"2-urgent": {kind: asking, ask: Ask{Title: "Enough sitting",
+			Caption: "1 h 35 min at the computer without a break. Only a 5 min snooze is left.",
+			Fact:    "Idle calves stop pumping blood back to the heart, and it pools in the veins of the lower legs. That is how clots form: gamers have had pulmonary embolisms after marathon sessions."}},
+		"3-warmup": {kind: countdown, cd: Countdown{Title: "Warm-up", Clock: "3:12",
+			Note: "The clock runs while the keyboard and mouse are left alone.", Progress: 0.36}},
+		"4-paused": {kind: countdown, cd: Countdown{Title: "Warm-up paused", Clock: "3:12",
+			Note: "You are using the computer, so the clock stands still. Step away and it goes on.", Paused: true, Progress: 0.36}},
 	}
 	for name, v := range views {
 		w.shown = v
 		w.hover = 0
-		if name == "1-calm" {
-			w.hover = Short
-		}
 		if err := savePNG(w, filepath.Join(dir, name+".png")); err != nil {
 			t.Fatal(err)
 		}
