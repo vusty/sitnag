@@ -35,10 +35,13 @@ overrides it.
 
 ## Install
 
-There is no prebuilt download: you build it yourself from this repository,
-which takes a minute. Every step below is a command, so a coding agent with
-shell access can do it too: "install sitnag from github.com/vusty/sitnag
-following its README".
+Build it from source, or download `sitnag.exe` from
+[Releases](https://github.com/vusty/sitnag/releases). The exe is not signed,
+so building it yourself is the better option. Every step below is a command,
+so a coding agent with shell access can do it too: "install sitnag from
+github.com/vusty/sitnag following its README".
+
+### Build from source
 
 You need Windows 10 or 11 (x64), [Go](https://go.dev/dl/) 1.27 or newer, and
 git. In PowerShell:
@@ -51,18 +54,10 @@ git clone https://github.com/vusty/sitnag.git
 cd sitnag
 go build -ldflags "-H=windowsgui -s -w" -o sitnag.exe .
 
-# Put it where it will live, start it with Windows, and start it now
 $dir = "$env:LOCALAPPDATA\Programs\sitnag"
-$log = "$env:LOCALAPPDATA\sitnag\sitnag.log"
 New-Item -ItemType Directory -Force $dir | Out-Null
 Copy-Item sitnag.exe $dir
-& "$dir\sitnag.exe" autostart on -log $log | Out-Host
-Start-Process "$dir\sitnag.exe" -ArgumentList "run", "-log", $log
 ```
-
-A green dot appears in the tray. Hover over it to see how long you have been
-sitting. `-H=windowsgui` builds it without a console window, and `-log` is the
-only way to see afterwards what it decided and when.
 
 From Linux, macOS or WSL the same binary cross-compiles, no cgo involved:
 
@@ -70,9 +65,26 @@ From Linux, macOS or WSL the same binary cross-compiles, no cgo involved:
 GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -s -w" -o sitnag.exe .
 ```
 
-The executable is not signed. Windows may warn about an unknown publisher, and
-Smart App Control, when it is on, blocks unsigned programs outright, self-built
-ones included; it has no per-app exception.
+### Or download it
+
+```powershell
+$dir = "$env:LOCALAPPDATA\Programs\sitnag"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Invoke-WebRequest https://github.com/vusty/sitnag/releases/latest/download/sitnag.exe -OutFile "$dir\sitnag.exe"
+Unblock-File "$dir\sitnag.exe"
+```
+
+### Start it with Windows
+
+```powershell
+$dir = "$env:LOCALAPPDATA\Programs\sitnag"
+$log = "$env:LOCALAPPDATA\sitnag\sitnag.log"
+& "$dir\sitnag.exe" autostart on -log $log | Out-Host
+Start-Process "$dir\sitnag.exe" -ArgumentList "run", "-log", $log
+```
+
+A green dot appears in the tray. Hover over it to see how long you have been
+sitting. The log is the only way to see afterwards what it decided and when.
 
 ### Uninstall
 
