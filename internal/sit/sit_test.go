@@ -63,16 +63,17 @@ func TestAsksAfterAnHour(t *testing.T) {
 func TestShortPauseKeepsCounting(t *testing.T) {
 	c := newClock(t)
 	c.work(40 * time.Minute)
-	c.away(4 * time.Minute)
-	if ev := c.work(16 * time.Minute); ev != Ask {
-		t.Fatalf("a 4-minute pause should not reset the count, got %v at %v", ev, c.at())
+	// The bathroom and a glass of water: not a warm-up.
+	c.away(9 * time.Minute)
+	if ev := c.work(11 * time.Minute); ev != Ask {
+		t.Fatalf("a 9-minute pause should not reset the count, got %v at %v", ev, c.at())
 	}
 }
 
 func TestWalkingAwayIsABreak(t *testing.T) {
 	c := newClock(t)
 	c.work(50 * time.Minute)
-	c.away(6 * time.Minute)
+	c.away(11 * time.Minute)
 	if got := c.s.Sitting(c.now); got != 0 {
 		t.Fatalf("sitting %v while away, want 0", got)
 	}
@@ -145,7 +146,7 @@ func TestLongSnoozeIsCutAtHardLimit(t *testing.T) {
 func TestLeavingWhileAsked(t *testing.T) {
 	c := newClock(t)
 	c.work(60 * time.Minute)
-	if ev := c.away(5 * time.Minute); ev != Left {
+	if ev := c.away(10 * time.Minute); ev != Left {
 		t.Fatalf("want Left, got %v", ev)
 	}
 	if c.s.Mode() != Working || c.s.Sitting(c.now) != 0 {
@@ -162,18 +163,52 @@ func TestBreak(t *testing.T) {
 	if c.s.StartBreak(c.now) {
 		t.Fatal("second start accepted")
 	}
-	if got := c.s.BreakLeft(c.now); got != 5*time.Minute {
+	if got := c.s.BreakLeft(); got != 5*time.Minute {
 		t.Fatalf("break left %v, want 5m", got)
 	}
-	// Input during the countdown changes nothing.
-	if ev := c.work(4*time.Minute + 50*time.Second); ev != None {
+	// The click that started it is not use: away from the desk the countdown
+	// runs at once.
+	if ev := c.away(4*time.Minute + 50*time.Second); ev != None {
 		t.Fatalf("event %v during the break", ev)
 	}
-	if ev := c.work(10 * time.Second); ev != BreakDone {
+	if got := c.s.BreakLeft(); got != 10*time.Second {
+		t.Fatalf("break left %v after 4m50s away, want 10s", got)
+	}
+	if c.s.BreakPaused() {
+		t.Fatal("paused with nobody at the keyboard")
+	}
+	// Back at the keyboard the countdown stands still, however long.
+	if ev := c.work(10 * time.Minute); ev != None {
+		t.Fatalf("event %v while using the computer during the break", ev)
+	}
+	if got := c.s.BreakLeft(); got != 10*time.Second {
+		t.Fatalf("break left %v after working through it, want still 10s", got)
+	}
+	if !c.s.BreakPaused() {
+		t.Fatal("not paused while the keyboard is in use")
+	}
+	// It resumes Busy after the last input: 5s + 10s more.
+	if ev := c.away(10 * time.Second); ev != None {
+		t.Fatalf("done too early: %v", ev)
+	}
+	if ev := c.away(20 * time.Second); ev != BreakDone {
 		t.Fatalf("want BreakDone, got %v", ev)
 	}
 	if ev := c.work(59 * time.Minute); ev != None {
 		t.Fatalf("count should start over after the break, got %v", ev)
+	}
+}
+
+func TestBreakWorkedThroughNeverEnds(t *testing.T) {
+	c := newClock(t)
+	c.work(60 * time.Minute)
+	c.s.StartBreak(c.now)
+	// Pressing the button and carrying on typing is the trick this closes.
+	if ev := c.work(30 * time.Minute); ev != None {
+		t.Fatalf("event %v while typing through the warm-up", ev)
+	}
+	if got := c.s.BreakLeft(); got != 5*time.Minute {
+		t.Fatalf("break left %v, want the full 5m", got)
 	}
 }
 

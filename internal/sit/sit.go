@@ -17,18 +17,26 @@ type Config struct {
 	Away time.Duration
 	// Break is the length of the warm-up countdown.
 	Break time.Duration
+	// Busy is how recent an input has to be, during the warm-up, to count as
+	// using the computer. The countdown stands still until there has been no
+	// input for this long.
+	Busy time.Duration
 	// ShortSnooze and LongSnooze are the two "later" buttons.
 	ShortSnooze, LongSnooze time.Duration
 }
 
 // DefaultConfig is a reminder every hour that cannot be put off past ninety
 // minutes by more than five at a time.
+//
+// Away is ten minutes, not five: the bathroom and a glass of water take five,
+// and that is not a warm-up.
 func DefaultConfig() Config {
 	return Config{
 		RemindAfter: 60 * time.Minute,
 		HardLimit:   90 * time.Minute,
-		Away:        5 * time.Minute,
+		Away:        10 * time.Minute,
 		Break:       5 * time.Minute,
+		Busy:        5 * time.Second,
 		ShortSnooze: 5 * time.Minute,
 		LongSnooze:  30 * time.Minute,
 	}
@@ -64,12 +72,18 @@ const (
 // State is the reminder's memory between ticks. The zero value is not usable;
 // call New.
 type State struct {
-	cfg      Config
-	mode     Mode
-	since    time.Time // start of the current stretch at the computer; zero while away
-	snoozed  time.Time // no reminder before this
-	breakEnd time.Time
-	last     time.Time // previous tick, to notice that the machine slept
+	cfg     Config
+	mode    Mode
+	since   time.Time // start of the current stretch at the computer; zero while away
+	snoozed time.Time // no reminder before this
+	last    time.Time // previous tick, to notice that the machine slept
+
+	// The warm-up counts down only time spent away from the keyboard and
+	// mouse, so it keeps what is left rather than an end time.
+	breakLeft    time.Duration
+	breakFrom    time.Time // the click that started it; input up to here is not "using"
+	breakCounted time.Time // the countdown has been settled up to here
+	busy         bool      // input during the warm-up, within Busy
 }
 
 // New starts counting from the first tick.
@@ -88,10 +102,12 @@ func (s *State) Tick(now time.Time, idle time.Duration) Event {
 	s.last = now
 
 	if s.mode == Breaking {
-		if now.Before(s.breakEnd) {
+		s.countBreak(now, idle)
+		if s.breakLeft > 0 {
 			return None
 		}
 		s.mode = Working
+		s.busy = false
 		s.restart()
 		return BreakDone
 	}
@@ -125,8 +141,31 @@ func (s *State) StartBreak(now time.Time) bool {
 		return false
 	}
 	s.mode = Breaking
-	s.breakEnd = now.Add(s.cfg.Break)
+	s.breakLeft = s.cfg.Break
+	s.breakFrom = now
+	s.breakCounted = now
+	s.busy = false
 	return true
+}
+
+// countBreak takes off the countdown the part of the time since the last tick
+// that had no input for at least Busy. A warm-up started and then spent at the
+// keyboard is not a warm-up, so while the keyboard or mouse is in use the
+// countdown stands still. The click on the start button does not count as use.
+func (s *State) countBreak(now time.Time, idle time.Duration) {
+	elapsed := now.Sub(s.breakCounted)
+	s.breakCounted = now
+	if elapsed <= 0 {
+		return
+	}
+	lastInput := now.Add(-idle)
+	quiet := elapsed
+	if lastInput.After(s.breakFrom) {
+		// The countdown runs from Busy after the last input.
+		quiet = min(elapsed, max(0, idle-s.cfg.Busy))
+	}
+	s.busy = lastInput.After(s.breakFrom) && idle < s.cfg.Busy
+	s.breakLeft = max(0, s.breakLeft-quiet)
 }
 
 // Snooze hides the reminder for the short or the long delay. The long one is
@@ -164,12 +203,15 @@ func (s *State) LongAllowed(now time.Time) bool {
 	return s.Sitting(now) < s.cfg.HardLimit
 }
 
-// BreakLeft is what remains of the countdown.
-func (s *State) BreakLeft(now time.Time) time.Duration {
-	if d := s.breakEnd.Sub(now); d > 0 {
-		return d
-	}
-	return 0
+// BreakLeft is what remains of the countdown, as of the last tick.
+func (s *State) BreakLeft() time.Duration {
+	return s.breakLeft
+}
+
+// BreakPaused says whether the warm-up countdown stands still because the
+// keyboard or mouse is in use.
+func (s *State) BreakPaused() bool {
+	return s.mode == Breaking && s.busy
 }
 
 // SnoozedUntil is when a snoozed reminder comes back, zero if none is pending.

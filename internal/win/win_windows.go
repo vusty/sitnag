@@ -14,36 +14,46 @@ var (
 	user32   = windows.NewLazySystemDLL("user32.dll")
 	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
 	gdi32    = windows.NewLazySystemDLL("gdi32.dll")
-	// Not a system DLL on purpose: loaded by bare name, comctl32 goes through
-	// side-by-side redirection to version 6, the one that draws themed buttons.
-	// A full system32 path would bypass that and give the Windows 95 look.
-	comctl32 = windows.NewLazyDLL("comctl32.dll")
+	gdiplus  = windows.NewLazySystemDLL("gdiplus.dll")
+	dwmapi   = windows.NewLazySystemDLL("dwmapi.dll")
 
-	procGetLastInputInfo     = user32.NewProc("GetLastInputInfo")
-	procMessageBeep          = user32.NewProc("MessageBeep")
-	procSetProcessDPIAware   = user32.NewProc("SetProcessDPIAware")
-	procGetDpiForSystem      = user32.NewProc("GetDpiForSystem")
-	procRegisterClassEx      = user32.NewProc("RegisterClassExW")
-	procCreateWindowEx       = user32.NewProc("CreateWindowExW")
-	procDefWindowProc        = user32.NewProc("DefWindowProcW")
-	procGetMessage           = user32.NewProc("GetMessageW")
-	procTranslateMessage     = user32.NewProc("TranslateMessage")
-	procDispatchMessage      = user32.NewProc("DispatchMessageW")
-	procPostMessage          = user32.NewProc("PostMessageW")
-	procSendMessage          = user32.NewProc("SendMessageW")
-	procShowWindow           = user32.NewProc("ShowWindow")
-	procSetWindowPos         = user32.NewProc("SetWindowPos")
-	procSetWindowText        = user32.NewProc("SetWindowTextW")
-	procGetWindowRect        = user32.NewProc("GetWindowRect")
-	procAdjustWindowRectEx   = user32.NewProc("AdjustWindowRectEx")
-	procSystemParametersInfo = user32.NewProc("SystemParametersInfoW")
-	procLoadCursor           = user32.NewProc("LoadCursorW")
-	procGetTickCount         = kernel32.NewProc("GetTickCount")
-	procGetModuleHandle      = kernel32.NewProc("GetModuleHandleW")
-	procCreateActCtx         = kernel32.NewProc("CreateActCtxW")
-	procActivateActCtx       = kernel32.NewProc("ActivateActCtx")
-	procCreateFont           = gdi32.NewProc("CreateFontW")
-	procInitCommonControlsEx = comctl32.NewProc("InitCommonControlsEx")
+	procGetLastInputInfo       = user32.NewProc("GetLastInputInfo")
+	procMessageBeep            = user32.NewProc("MessageBeep")
+	procSetProcessDPIAware     = user32.NewProc("SetProcessDPIAware")
+	procGetDpiForSystem        = user32.NewProc("GetDpiForSystem")
+	procRegisterClassEx        = user32.NewProc("RegisterClassExW")
+	procCreateWindowEx         = user32.NewProc("CreateWindowExW")
+	procDefWindowProc          = user32.NewProc("DefWindowProcW")
+	procGetMessage             = user32.NewProc("GetMessageW")
+	procTranslateMessage       = user32.NewProc("TranslateMessage")
+	procDispatchMessage        = user32.NewProc("DispatchMessageW")
+	procPostMessage            = user32.NewProc("PostMessageW")
+	procSendMessage            = user32.NewProc("SendMessageW")
+	procShowWindow             = user32.NewProc("ShowWindow")
+	procSetWindowPos           = user32.NewProc("SetWindowPos")
+	procSystemParametersInfo   = user32.NewProc("SystemParametersInfoW")
+	procLoadCursor             = user32.NewProc("LoadCursorW")
+	procSetCursor              = user32.NewProc("SetCursor")
+	procBeginPaint             = user32.NewProc("BeginPaint")
+	procEndPaint               = user32.NewProc("EndPaint")
+	procInvalidateRect         = user32.NewProc("InvalidateRect")
+	procDrawText               = user32.NewProc("DrawTextW")
+	procSetCapture             = user32.NewProc("SetCapture")
+	procReleaseCapture         = user32.NewProc("ReleaseCapture")
+	procTrackMouseEvent        = user32.NewProc("TrackMouseEvent")
+	procGetTickCount           = kernel32.NewProc("GetTickCount")
+	procGetModuleHandle        = kernel32.NewProc("GetModuleHandleW")
+	procCreateFont             = gdi32.NewProc("CreateFontW")
+	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
+	procCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
+	procSelectObject           = gdi32.NewProc("SelectObject")
+	procDeleteObject           = gdi32.NewProc("DeleteObject")
+	procDeleteDC               = gdi32.NewProc("DeleteDC")
+	procBitBlt                 = gdi32.NewProc("BitBlt")
+	procSetBkMode              = gdi32.NewProc("SetBkMode")
+	procSetTextColor           = gdi32.NewProc("SetTextColor")
+
+	procDwmSetWindowAttribute = dwmapi.NewProc("DwmSetWindowAttribute")
 )
 
 type lastInputInfo struct {
@@ -94,46 +104,4 @@ func systemDPI() int {
 		return int(dpi)
 	}
 	return 96
-}
-
-type actCtx struct {
-	size                  uint32
-	flags                 uint32
-	source                *uint16
-	processorArchitecture uint16
-	langID                uint16
-	assemblyDirectory     *uint16
-	resourceName          uintptr
-	applicationName       *uint16
-	module                windows.Handle
-}
-
-// enableVisualStyles activates, on the calling thread, the comctl32 v6
-// manifest that shell32.dll carries as resource 124. Without a manifest of its
-// own an executable gets classic grey buttons; this borrows the system's. If it
-// fails the window still works, just in the old look.
-func enableVisualStyles() {
-	dir, err := windows.GetSystemDirectory()
-	if err != nil {
-		return
-	}
-	ctx := actCtx{
-		flags:             0x4 | 0x8, // ASSEMBLY_DIRECTORY_VALID | RESOURCE_NAME_VALID
-		source:            windows.StringToUTF16Ptr(dir + `\shell32.dll`),
-		assemblyDirectory: windows.StringToUTF16Ptr(dir),
-		resourceName:      124,
-	}
-	ctx.size = uint32(unsafe.Sizeof(ctx))
-	h, _, _ := procCreateActCtx.Call(uintptr(unsafe.Pointer(&ctx)))
-	if h == uintptr(windows.InvalidHandle) {
-		return
-	}
-	var cookie uintptr
-	if r, _, _ := procActivateActCtx.Call(h, uintptr(unsafe.Pointer(&cookie))); r == 0 {
-		return
-	}
-	icc := struct{ size, classes uint32 }{8, 0x4000} // ICC_STANDARD_CLASSES
-	if procInitCommonControlsEx.Find() == nil {
-		procInitCommonControlsEx.Call(uintptr(unsafe.Pointer(&icc)))
-	}
 }
