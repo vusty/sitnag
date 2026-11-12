@@ -1,6 +1,6 @@
-// Package tray puts sitnag in the notification area: a dot whose colour says
-// what the tool is doing, a tooltip and a menu line with how long you have
-// been sitting, a way to start the warm-up early, and a way to quit.
+// Package tray puts sitnag in the notification area: a chair, a tooltip and
+// a menu line with how long you have been sitting, a way to start the warm-up
+// early, and a way to quit.
 package tray
 
 import (
@@ -10,25 +10,19 @@ import (
 	"github.com/getlantern/systray"
 )
 
-var (
-	//go:embed icons/work.ico
-	iconWork []byte
-	//go:embed icons/ask.ico
-	iconAsk []byte
-	//go:embed icons/break.ico
-	iconBreak []byte
-)
+// The same chair the exe carries; icons/make.py draws it.
+//
+//go:embed icons/chair.ico
+var chair []byte
 
-// Icon is the colour of the dot.
-type Icon int
+// State is what the tool is doing, as far as the menu cares.
+type State int
 
 const (
-	Work  Icon = iota // green: counting
-	Ask               // orange: time to get up
-	Break             // blue: warm-up running
+	Work  State = iota // counting
+	Ask                // time to get up
+	Break              // warm-up running
 )
-
-var icons = map[Icon][]byte{Work: iconWork, Ask: iconAsk, Break: iconBreak}
 
 // Options wires the tray to the rest of the tool.
 type Options struct {
@@ -51,7 +45,7 @@ var (
 	mu         sync.Mutex
 	statusItem *systray.MenuItem
 	breakItem  *systray.MenuItem
-	lastIcon   = Icon(-1)
+	lastState  = State(-1)
 	lastStatus string
 )
 
@@ -61,22 +55,21 @@ func Run(o Options) {
 	systray.Run(func() { ready(o) }, o.OnQuit)
 }
 
-// Set changes the dot and the status line. Safe from any goroutine; repeating
-// the same values costs nothing.
-func Set(icon Icon, status string) {
+// Set tells the tray what the tool is doing and changes the status line. Safe
+// from any goroutine; repeating the same values costs nothing.
+func Set(state State, status string) {
 	mu.Lock()
 	defer mu.Unlock()
-	if icon != lastIcon {
-		systray.SetIcon(icons[icon])
-		// Blue means a warm-up is already running: nothing to start.
+	if state != lastState {
+		// A warm-up is already running: nothing to start.
 		if breakItem != nil {
-			if icon == Break {
+			if state == Break {
 				breakItem.Disable()
 			} else {
 				breakItem.Enable()
 			}
 		}
-		lastIcon = icon
+		lastState = state
 	}
 	if status != lastStatus {
 		systray.SetTooltip("sitnag: " + status)
@@ -88,6 +81,7 @@ func Set(icon Icon, status string) {
 }
 
 func ready(o Options) {
+	systray.SetIcon(chair)
 	systray.SetTitle("sitnag")
 	item := systray.AddMenuItem("", "")
 	item.Disable()

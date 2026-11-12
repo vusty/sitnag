@@ -95,7 +95,7 @@ $log = "$env:LOCALAPPDATA\sitnag\sitnag.log"
 Start-Process "$dir\sitnag.exe" -ArgumentList "run", "-log", $log
 ```
 
-A green dot appears in the tray. Hover over it to see how long you have been
+A chair appears in the tray. Hover over it to see how long you have been
 sitting. The log is the only way to see afterwards what it decided and when.
 
 ### Uninstall
@@ -157,9 +157,6 @@ mouse input anywhere in the session. The tool checks it once a second.
   keystroke meant for the editor cannot press one of its buttons. It ignores
   Alt+F4: it goes away through its buttons, or through Quit in the tray.
 
-The tray dot is green while counting, orange while the reminder is up, and
-blue during the warm-up.
-
 ## Limits
 
 Idle is input only. An hour on a call spent listening without touching the
@@ -178,9 +175,15 @@ run it on Windows; it writes the PNGs this README shows:
     GOOS=windows go test -c -o win.test.exe ./internal/win
     SITNAG_RENDER=C:\temp\sitnag win.test.exe -test.run Render
 
+The chair in the tray and on the exe is one icon, drawn from
+`internal/tray/icons/chair.svg`. The header of `internal/tray/icons/make.py`
+has the two commands that redraw it.
+
 [granag](https://github.com/vusty/granag) is its sibling: it reminds you to
 start recording in Granola when you unmute the microphone.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The chair is from Google's
+[Noto Emoji](https://github.com/googlefonts/noto-emoji), under the Apache
+License 2.0: see `internal/tray/icons/LICENSE-noto-emoji`.
