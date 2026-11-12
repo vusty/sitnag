@@ -52,6 +52,7 @@ var (
 // Run shows the icon and blocks until the user quits. It must be called on the
 // main goroutine: the tray owns a window message loop.
 func Run(o Options) {
+	followMenuTheme()
 	systray.Run(func() { ready(o) }, o.OnQuit)
 }
 
@@ -72,7 +73,7 @@ func Set(state State, status string) {
 		lastState = state
 	}
 	if status != lastStatus {
-		systray.SetTooltip("sitnag: " + status)
+		systray.SetTooltip("Sitnag: " + status)
 		if statusItem != nil {
 			statusItem.SetTitle(status)
 		}
@@ -82,7 +83,7 @@ func Set(state State, status string) {
 
 func ready(o Options) {
 	systray.SetIcon(chair)
-	systray.SetTitle("sitnag")
+	systray.SetTitle("Sitnag")
 	item := systray.AddMenuItem("", "")
 	item.Disable()
 	breakNow := systray.AddMenuItem(o.BreakNow, "")

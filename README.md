@@ -1,4 +1,4 @@
-# sitnag
+# Sitnag
 
 Short for sit-nag. A Windows tray tool that counts the time you spend at the
 computer and, after an hour, asks for a five-minute warm-up. I know what the
@@ -50,7 +50,7 @@ overrides it.
 Build it from source, or download `sitnag.exe` from
 [Releases](https://github.com/vusty/sitnag/releases). The exe is not signed,
 so building it yourself is the better option. Every step below is a command,
-so a coding agent with shell access can do it too: "install sitnag from
+so a coding agent with shell access can do it too: "install Sitnag from
 github.com/vusty/sitnag following its README".
 
 ### Build from source
@@ -111,7 +111,7 @@ and the log folder `%LOCALAPPDATA%\sitnag`.
 
 All settings are flags of `run`. Anything after `autostart on` is stored and
 passed to `run` at logon, so to change a setting run `autostart on` again with
-the new flags, then restart sitnag from the tray.
+the new flags, then restart Sitnag from the tray.
 
 | Flag | Default | What it sets |
 |---|---|---|

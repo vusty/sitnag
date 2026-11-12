@@ -297,7 +297,7 @@ func (w *Window) create() error {
 	const exStyle = wsExTopmost | wsExToolWindow | wsExNoActivate
 	hwnd, _, err := procCreateWindowEx.Call(exStyle,
 		uintptr(unsafe.Pointer(className)),
-		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("sitnag"))),
+		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("Sitnag"))),
 		wsPopup, 0, 0, uintptr(w.px(cardW)), uintptr(w.px(cardH)),
 		0, 0, instance, 0)
 	if hwnd == 0 {

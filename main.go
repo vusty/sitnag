@@ -293,6 +293,9 @@ func clock(d time.Duration) string {
 
 const autostartKey = `Software\Microsoft\Windows\CurrentVersion\Run`
 
+// runValue is the name of the entry under autostartKey.
+const runValue = "Sitnag"
+
 // autostartCmd turns logon startup on and off through the Run key, the same
 // way granag does it.
 func autostartCmd(args []string) error {
@@ -322,17 +325,22 @@ func autostartCmd(args []string) error {
 			}
 			value += " " + arg
 		}
-		if err := k.SetStringValue("sitnag", value); err != nil {
+		// Value names ignore case, and overwriting one keeps the case it was
+		// created with, so a value left by an older build has to go first.
+		if err := k.DeleteValue(runValue); err != nil && !errors.Is(err, registry.ErrNotExist) {
+			return err
+		}
+		if err := k.SetStringValue(runValue, value); err != nil {
 			return err
 		}
 		fmt.Println("autostart on:", value)
 	case "off":
-		if err := k.DeleteValue("sitnag"); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		if err := k.DeleteValue(runValue); err != nil && !errors.Is(err, registry.ErrNotExist) {
 			return err
 		}
 		fmt.Println("autostart off")
 	case "status":
-		v, _, err := k.GetStringValue("sitnag")
+		v, _, err := k.GetStringValue(runValue)
 		if errors.Is(err, registry.ErrNotExist) {
 			fmt.Println("autostart off")
 			return nil
