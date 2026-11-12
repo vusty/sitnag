@@ -1,6 +1,6 @@
 // Package tray puts sitnag in the notification area: a dot whose colour says
 // what the tool is doing, a tooltip and a menu line with how long you have
-// been sitting, and a way to quit.
+// been sitting, a way to start the warm-up early, and a way to quit.
 package tray
 
 import (
@@ -34,6 +34,11 @@ var icons = map[Icon][]byte{Work: iconWork, Ask: iconAsk, Break: iconBreak}
 type Options struct {
 	// Quit is the caption of the menu item that exits.
 	Quit string
+	// BreakNow is the caption of the menu item that starts the warm-up
+	// without waiting for the reminder.
+	BreakNow string
+	// OnBreakNow runs on the tray's goroutine when that item is clicked.
+	OnBreakNow func()
 	// Status is the first status line, until the tool sets its own.
 	Status string
 	// OnReady runs once the icon exists; Set is safe to call from then on.
@@ -45,6 +50,7 @@ type Options struct {
 var (
 	mu         sync.Mutex
 	statusItem *systray.MenuItem
+	breakItem  *systray.MenuItem
 	lastIcon   = Icon(-1)
 	lastStatus string
 )
@@ -62,6 +68,14 @@ func Set(icon Icon, status string) {
 	defer mu.Unlock()
 	if icon != lastIcon {
 		systray.SetIcon(icons[icon])
+		// Blue means a warm-up is already running: nothing to start.
+		if breakItem != nil {
+			if icon == Break {
+				breakItem.Disable()
+			} else {
+				breakItem.Enable()
+			}
+		}
 		lastIcon = icon
 	}
 	if status != lastStatus {
@@ -77,17 +91,28 @@ func ready(o Options) {
 	systray.SetTitle("sitnag")
 	item := systray.AddMenuItem("", "")
 	item.Disable()
+	breakNow := systray.AddMenuItem(o.BreakNow, "")
 	systray.AddSeparator()
 	quit := systray.AddMenuItem(o.Quit, "")
 
 	mu.Lock()
 	statusItem = item
+	breakItem = breakNow
 	mu.Unlock()
 	Set(Work, o.Status)
 
 	go func() {
-		<-quit.ClickedCh
-		systray.Quit()
+		for {
+			select {
+			case <-breakNow.ClickedCh:
+				if o.OnBreakNow != nil {
+					o.OnBreakNow()
+				}
+			case <-quit.ClickedCh:
+				systray.Quit()
+				return
+			}
+		}
 	}()
 	if o.OnReady != nil {
 		o.OnReady()

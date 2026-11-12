@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 
+	"github.com/vusty/sitnag/internal/figure"
 	"github.com/vusty/sitnag/internal/sit"
 	"github.com/vusty/sitnag/internal/tray"
 	"github.com/vusty/sitnag/internal/win"
@@ -55,14 +56,15 @@ func run(args []string) error {
 	fs.DurationVar(&cfg.HardLimit, "limit", cfg.HardLimit, "past this only the short snooze is offered")
 	fs.DurationVar(&cfg.Away, "away", cfg.Away, "no input this long counts as a break")
 	fs.DurationVar(&cfg.Break, "break", cfg.Break, "length of the warm-up countdown")
-	fs.DurationVar(&cfg.Busy, "busy", cfg.Busy, "input this recent during the warm-up pauses it")
+	fs.DurationVar(&cfg.Grace, "grace", cfg.Grace, "input that goes on this long during the warm-up pauses it")
+	fs.DurationVar(&cfg.Busy, "busy", cfg.Busy, "a paused warm-up goes on after this long without input")
 	fs.DurationVar(&cfg.ShortSnooze, "short", cfg.ShortSnooze, "the short snooze")
 	fs.DurationVar(&cfg.LongSnooze, "long", cfg.LongSnooze, "the long snooze")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	for name, d := range map[string]time.Duration{"remind": cfg.RemindAfter, "limit": cfg.HardLimit,
-		"away": cfg.Away, "break": cfg.Break, "busy": cfg.Busy, "short": cfg.ShortSnooze, "long": cfg.LongSnooze} {
+		"away": cfg.Away, "break": cfg.Break, "grace": cfg.Grace, "busy": cfg.Busy, "short": cfg.ShortSnooze, "long": cfg.LongSnooze} {
 		if d <= 0 {
 			return fmt.Errorf("-%s must be positive, got %v", name, d)
 		}
@@ -97,6 +99,7 @@ func run(args []string) error {
 
 	win.DPIAware()
 	choices := make(chan win.Choice, 4)
+	breakNow := make(chan struct{}, 1)
 	w, err := win.Open(choices, win.Labels{
 		Start:       t.start,
 		Short:       fmt.Sprintf(t.snooze, human(cfg.ShortSnooze)),
@@ -107,12 +110,20 @@ func run(args []string) error {
 		return fmt.Errorf("window: %w", err)
 	}
 
-	logf("start: remind after %v, limit %v, away %v, break %v (paused by input within %v), snooze %v/%v, language %s",
-		cfg.RemindAfter, cfg.HardLimit, cfg.Away, cfg.Break, cfg.Busy, cfg.ShortSnooze, cfg.LongSnooze, t.lang)
+	logf("start: remind after %v, limit %v, away %v, break %v (paused by %v of input, resumed %v after it), snooze %v/%v, language %s",
+		cfg.RemindAfter, cfg.HardLimit, cfg.Away, cfg.Break, cfg.Grace, cfg.Busy, cfg.ShortSnooze, cfg.LongSnooze, t.lang)
 	tray.Run(tray.Options{
-		Quit:    t.quit,
+		Quit:     t.quit,
+		BreakNow: t.breakNow,
+		OnBreakNow: func() {
+			// A click already waiting is enough; more of them change nothing.
+			select {
+			case breakNow <- struct{}{}:
+			default:
+			}
+		},
 		Status:  t.trayStarting,
-		OnReady: func() { go loop(sit.New(cfg), cfg, w, choices) },
+		OnReady: func() { go loop(sit.New(cfg), cfg, w, choices, breakNow) },
 		OnQuit:  func() { logf("quit") },
 	})
 	return nil
@@ -120,13 +131,13 @@ func run(args []string) error {
 
 // loop owns the state: every tick and every button press goes through here,
 // so nothing needs a lock.
-func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Choice) {
+func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Choice, breakNow <-chan struct{}) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 
 	// Each reminder past the hard limit shows the next fact; the start is
 	// random so a restart does not open on the same one.
-	fact := int(time.Now().Unix()) % len(t.facts)
+	fact := int(time.Now().Unix()) % len(facts)
 	var paused bool
 
 	for {
@@ -135,7 +146,7 @@ func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Ch
 		before := state.Sitting(now)
 		switch state.Tick(now, win.Idle()) {
 		case sit.Ask:
-			fact = (fact + 1) % len(t.facts)
+			fact = (fact + 1) % len(facts)
 			logf("reminder: at the computer for %s", human(state.Sitting(now)))
 			win.Beep(win.Attention)
 		case sit.Left:
@@ -156,12 +167,17 @@ func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Ch
 			}
 			paused = p
 		}
-		render(state, cfg, w, now, t.facts[fact])
+		render(state, cfg, w, now, facts[fact])
 
 		// A press goes straight back round the loop, so the window reacts at
 		// once instead of on the next tick.
 		select {
 		case <-tick.C:
+		case <-breakNow:
+			now := time.Now().Round(0)
+			if state.BreakNow(now) {
+				logf("warm-up started from the tray after %s at the computer", human(state.Sitting(now)))
+			}
 		case c := <-choices:
 			now := time.Now().Round(0)
 			sat := human(state.Sitting(now))
@@ -171,8 +187,13 @@ func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Ch
 					logf("warm-up started after %s at the computer", sat)
 				}
 			case win.Short, win.Long:
-				if state.Snooze(now, c == win.Long) {
+				// The short snooze is also the button on the warm-up itself.
+				left := clock(state.BreakLeft())
+				switch {
+				case state.Snooze(now, c == win.Long):
 					logf("snoozed until %s after %s at the computer", state.SnoozedUntil().Format("15:04:05"), sat)
+				case c == win.Short && state.PutOff(now):
+					logf("warm-up put off at %s left: the reminder comes back at %s", left, state.SnoozedUntil().Format("15:04:05"))
 				}
 			}
 		}
@@ -181,7 +202,7 @@ func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Ch
 
 // render makes the window and the tray match the state. fact is the one to
 // show if the reminder comes past the hard limit.
-func render(state *sit.State, cfg sit.Config, w *win.Window, now time.Time, fact string) {
+func render(state *sit.State, cfg sit.Config, w *win.Window, now time.Time, fact fact) {
 	sat := state.Sitting(now)
 	switch state.Mode() {
 	case sit.Asking:
@@ -196,23 +217,32 @@ func render(state *sit.State, cfg sit.Config, w *win.Window, now time.Time, fact
 			w.Ask(win.Ask{
 				Title:   t.urgentTitle,
 				Caption: fmt.Sprintf(t.urgentCaption, human(sat), human(cfg.ShortSnooze)),
-				Fact:    fact,
+				Fact:    fact.text(),
+				Source:  fact.source,
 			})
 		}
 		tray.Set(tray.Ask, fmt.Sprintf(t.trayAsk, human(sat)))
 	case sit.Breaking:
 		leftD := state.BreakLeft()
 		left := clock(leftD)
+		// The moves follow the countdown, not the wall clock: a paused warm-up
+		// stays on the move it was paused at.
+		move := int((cfg.Break-leftD)/moveEvery) % figure.Count
 		cd := win.Countdown{
 			Title:    t.breakTitle,
 			Clock:    left,
+			Move:     move,
+			Name:     t.moves[move].name,
+			Cue:      t.moves[move].cue,
 			Note:     t.breakNote,
 			Progress: 1 - float64(leftD)/float64(cfg.Break),
 		}
 		status := fmt.Sprintf(t.trayBreak, left)
 		if state.BreakPaused() {
+			// The mannequin stays, frozen; why it froze takes the place of
+			// what to do.
 			cd.Title = t.pausedTitle
-			cd.Note = t.pausedNote
+			cd.Name, cd.Cue, cd.Note = "", t.pausedNote, ""
 			cd.Paused = true
 			status = fmt.Sprintf(t.trayPaused, left)
 		}
@@ -231,6 +261,11 @@ func render(state *sit.State, cfg sit.Config, w *win.Window, now time.Time, fact
 		tray.Set(tray.Work, status)
 	}
 }
+
+// moveEvery is how long the warm-up stays on one move. Ten moves of half a
+// minute fill the default five minutes exactly; a longer warm-up goes round
+// again.
+const moveEvery = 30 * time.Second
 
 // human renders a duration the way the window speaks: "42 min", "1 h 05 min".
 // Seconds only show up with test-sized flags.

@@ -41,6 +41,8 @@ var (
 	procSetCapture             = user32.NewProc("SetCapture")
 	procReleaseCapture         = user32.NewProc("ReleaseCapture")
 	procTrackMouseEvent        = user32.NewProc("TrackMouseEvent")
+	procSetTimer               = user32.NewProc("SetTimer")
+	procKillTimer              = user32.NewProc("KillTimer")
 	procGetTickCount           = kernel32.NewProc("GetTickCount")
 	procGetModuleHandle        = kernel32.NewProc("GetModuleHandleW")
 	procCreateFont             = gdi32.NewProc("CreateFontW")

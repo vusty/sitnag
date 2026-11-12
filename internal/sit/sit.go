@@ -17,9 +17,11 @@ type Config struct {
 	Away time.Duration
 	// Break is the length of the warm-up countdown.
 	Break time.Duration
-	// Busy is how recent an input has to be, during the warm-up, to count as
-	// using the computer. The countdown stands still until there has been no
-	// input for this long.
+	// Grace is how long the keyboard or mouse has to stay in use, during the
+	// warm-up, before that counts as using the computer. A hand leaving the
+	// mouse or a bumped desk is shorter than this and changes nothing.
+	Grace time.Duration
+	// Busy is how long without input a paused warm-up waits before it goes on.
 	Busy time.Duration
 	// ShortSnooze and LongSnooze are the two "later" buttons.
 	ShortSnooze, LongSnooze time.Duration
@@ -36,6 +38,7 @@ func DefaultConfig() Config {
 		HardLimit:   90 * time.Minute,
 		Away:        10 * time.Minute,
 		Break:       5 * time.Minute,
+		Grace:       3 * time.Second,
 		Busy:        5 * time.Second,
 		ShortSnooze: 5 * time.Minute,
 		LongSnooze:  30 * time.Minute,
@@ -76,6 +79,7 @@ type State struct {
 	mode    Mode
 	since   time.Time // start of the current stretch at the computer; zero while away
 	snoozed time.Time // no reminder before this
+	owed    bool      // a warm-up was put off: the reminder is due whatever the count says
 	last    time.Time // previous tick, to notice that the machine slept
 
 	// The warm-up counts down only time spent away from the keyboard and
@@ -83,7 +87,12 @@ type State struct {
 	breakLeft    time.Duration
 	breakFrom    time.Time // the click that started it; input up to here is not "using"
 	breakCounted time.Time // the countdown has been settled up to here
-	busy         bool      // input during the warm-up, within Busy
+	busy         bool      // the computer is in use, the countdown stands still
+
+	// A run of input during the warm-up: it starts with the first input seen
+	// and ends after Grace without any. Once it has lasted Grace it is use.
+	useFrom    time.Time     // first input of the run; zero when there is none
+	useCounted time.Duration // what came off the countdown while the run was young
 }
 
 // New starts counting from the first tick.
@@ -127,7 +136,7 @@ func (s *State) Tick(now time.Time, idle time.Duration) Event {
 	if s.since.IsZero() {
 		s.since = now.Add(-idle)
 	}
-	if s.mode == Working && s.Sitting(now) >= s.cfg.RemindAfter && !now.Before(s.snoozed) {
+	if s.mode == Working && (s.owed || s.Sitting(now) >= s.cfg.RemindAfter) && !now.Before(s.snoozed) {
 		s.mode = Asking
 		return Ask
 	}
@@ -140,18 +149,39 @@ func (s *State) StartBreak(now time.Time) bool {
 	if s.mode != Asking {
 		return false
 	}
+	s.beginBreak(now)
+	return true
+}
+
+// BreakNow begins the countdown without waiting for the reminder: tired
+// earlier than the hour, or ready before a long snooze runs out. Once it is
+// done the count starts over and any snooze is forgotten, the same as after a
+// warm-up the reminder asked for. It does nothing while one is already running.
+func (s *State) BreakNow(now time.Time) bool {
+	if s.mode == Breaking {
+		return false
+	}
+	s.beginBreak(now)
+	return true
+}
+
+func (s *State) beginBreak(now time.Time) {
 	s.mode = Breaking
 	s.breakLeft = s.cfg.Break
 	s.breakFrom = now
 	s.breakCounted = now
 	s.busy = false
-	return true
+	s.useFrom = time.Time{}
+	s.useCounted = 0
 }
 
-// countBreak takes off the countdown the part of the time since the last tick
-// that had no input for at least Busy. A warm-up started and then spent at the
-// keyboard is not a warm-up, so while the keyboard or mouse is in use the
-// countdown stands still. The click on the start button does not count as use.
+// countBreak takes the time since the last tick off the countdown, unless the
+// computer is in use. A warm-up started and then spent at the keyboard is not
+// a warm-up, so input that goes on for Grace stops the countdown, and hands
+// back what came off it since that input began: carrying on working earns
+// nothing. A single touch is not use and costs nothing: the hand leaving the
+// mouse after the click on the start button, a bumped desk. Once stopped, the
+// countdown goes on after Busy without input.
 func (s *State) countBreak(now time.Time, idle time.Duration) {
 	elapsed := now.Sub(s.breakCounted)
 	s.breakCounted = now
@@ -159,13 +189,49 @@ func (s *State) countBreak(now time.Time, idle time.Duration) {
 		return
 	}
 	lastInput := now.Add(-idle)
-	quiet := elapsed
-	if lastInput.After(s.breakFrom) {
-		// The countdown runs from Busy after the last input.
-		quiet = min(elapsed, max(0, idle-s.cfg.Busy))
+	switch {
+	case idle >= s.cfg.Grace:
+		s.useFrom = time.Time{}
+		s.useCounted = 0
+	case s.useFrom.IsZero() && lastInput.After(s.breakFrom):
+		s.useFrom = lastInput
 	}
-	s.busy = lastInput.After(s.breakFrom) && idle < s.cfg.Busy
-	s.breakLeft = max(0, s.breakLeft-quiet)
+	using := !s.useFrom.IsZero()
+
+	switch {
+	case s.busy:
+		if idle < s.cfg.Busy {
+			return
+		}
+		s.busy = false
+		s.useFrom = time.Time{}
+		s.breakLeft = max(0, s.breakLeft-min(elapsed, idle-s.cfg.Busy))
+	case using && lastInput.Sub(s.useFrom) >= s.cfg.Grace:
+		s.busy = true
+		s.breakLeft = min(s.cfg.Break, s.breakLeft+s.useCounted)
+		s.useCounted = 0
+	default:
+		s.breakLeft = max(0, s.breakLeft-elapsed)
+		if using {
+			s.useCounted += elapsed
+		}
+	}
+}
+
+// PutOff drops a running warm-up for the short snooze: it was started by a
+// slip of the hand, or something cannot wait. The warm-up is still owed, so
+// the reminder comes back when the snooze ends, however short the count is by
+// then, and the warm-up it starts runs from the top. Walking away meanwhile
+// settles it like any other break.
+func (s *State) PutOff(now time.Time) bool {
+	if s.mode != Breaking {
+		return false
+	}
+	s.mode = Working
+	s.busy = false
+	s.owed = true
+	s.snoozed = now.Add(s.cfg.ShortSnooze)
+	return true
 }
 
 // Snooze hides the reminder for the short or the long delay. The long one is
@@ -220,4 +286,5 @@ func (s *State) SnoozedUntil() time.Time { return s.snoozed }
 func (s *State) restart() {
 	s.since = time.Time{}
 	s.snoozed = time.Time{}
+	s.owed = false
 }

@@ -10,7 +10,8 @@ import (
 // GDI+ draws what plain GDI cannot: antialiased rounded corners, see-through
 // fills, and a smooth gradient. Only its integer entry points are used, plus
 // the arc angles, which sit past the fourth argument and so travel on the
-// stack, where a float32 is just its bits in the low half of a slot.
+// stack, where a float32 is just its bits in the low half of a slot, and the
+// polygons, whose fractional points go in by pointer.
 
 var (
 	procGdiplusStartup           = gdiplus.NewProc("GdiplusStartup")
@@ -25,6 +26,7 @@ var (
 	procGdipCreatePath           = gdiplus.NewProc("GdipCreatePath")
 	procGdipDeletePath           = gdiplus.NewProc("GdipDeletePath")
 	procGdipAddPathArcI          = gdiplus.NewProc("GdipAddPathArcI")
+	procGdipAddPathPolygon       = gdiplus.NewProc("GdipAddPathPolygon")
 	procGdipClosePathFigure      = gdiplus.NewProc("GdipClosePathFigure")
 	procGdipFillPath             = gdiplus.NewProc("GdipFillPath")
 )
@@ -34,6 +36,7 @@ const (
 	gradientDiagonal     = 2 // LinearGradientModeForwardDiagonal
 	wrapTileFlipXY       = 3 // no seam where the brush would repeat
 	fillModeAlternate    = 0
+	fillModeWinding      = 1
 	gdiplusStatusOK      = 0
 	gdiplusStartupInputV = 1
 )
@@ -122,5 +125,28 @@ func (g *graphics) roundRect(x, y, w, h, r int, argb uint32) {
 	arc(x+w-d, y+h-d, 0)
 	arc(x, y+h-d, 90)
 	procGdipClosePathFigure.Call(path)
+	procGdipFillPath.Call(g.g, brush, path)
+}
+
+// fill paints closed polygons, each a run of x, y pairs in pixels, as one
+// area: where they overlap the colour goes on once. They have to be wound the
+// same way. Fractions of a pixel are kept, so slow motion does not jump from
+// one pixel to the next.
+func (g *graphics) fill(polygons [][]float32, argb uint32) {
+	brush, ok := g.solid(argb)
+	if !ok {
+		return
+	}
+	defer procGdipDeleteBrush.Call(brush)
+	var path uintptr
+	if s, _, _ := procGdipCreatePath.Call(fillModeWinding, uintptr(unsafe.Pointer(&path))); s != gdiplusStatusOK {
+		return
+	}
+	defer procGdipDeletePath.Call(path)
+	for _, p := range polygons {
+		if len(p) >= 6 {
+			procGdipAddPathPolygon.Call(path, uintptr(unsafe.Pointer(&p[0])), uintptr(len(p)/2))
+		}
+	}
 	procGdipFillPath.Call(g.g, brush, path)
 }

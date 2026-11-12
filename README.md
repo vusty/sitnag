@@ -20,14 +20,26 @@ leave the keyboard.
 - **Stops bargaining at ninety minutes.** From there only the 5-minute snooze
   is left, a 30-minute one taken earlier ends at the ninety-minute mark, and
   every reminder turns red and carries a fact about what sitting does to the
-  body. Each fact has its study next to it in [facts.go](facts.go).
+  body, with the study it comes from. The whole list is in
+  [facts.go](facts.go).
+- **Shows what to do.** A mannequin goes through ten moves, half a minute
+  each, from the neck down to marching in place, with a line on how to do
+  each one.
 - **Counts only a real warm-up.** The five-minute countdown runs only while
-  the keyboard and mouse are left alone. Touch them and it stops, so pressing
-  "start" and carrying on working earns nothing.
+  the keyboard and mouse are left alone. Use them for three seconds and it
+  stops, and the seconds it ran meanwhile are taken back, so pressing "start"
+  and carrying on working earns nothing. A stray touch on the way out of the
+  chair does not count.
+- **Lets you put it off.** A warm-up started by a slip of the hand, or one
+  that something urgent cuts short, has a snooze button of its own. Five
+  minutes later the reminder is back, and the warm-up starts from the top.
+- **Lets you go early.** "Start the warm-up now" in the tray menu opens the
+  countdown at any moment: tired before the hour, or ready before a 30-minute
+  snooze runs out. Once it is done the count starts over, as after any warm-up.
 
-| Past ninety minutes | Warm-up, paused while you use the computer |
-|---|---|
-| ![Urgent reminder](docs/urgent.png) | ![Paused warm-up](docs/paused.png) |
+| Past ninety minutes | The warm-up | Paused while you use the computer |
+|---|---|---|
+| ![Urgent reminder](docs/urgent.png) | ![Warm-up](docs/warmup.png) | ![Paused warm-up](docs/paused.png) |
 
 The interface is in English or Russian, picked from the first language in the
 Windows language list (Settings > Time & language). `-lang en` or `-lang ru`
@@ -107,8 +119,9 @@ the new flags, then restart sitnag from the tray.
 | `-limit` | `90m` | past this only the short snooze is left, and the reminder turns red |
 | `-away` | `10m` | no input this long counts as having left, and the count starts over |
 | `-break` | `5m` | length of the warm-up |
-| `-busy` | `5s` | input this recent pauses the warm-up |
-| `-short`, `-long` | `5m`, `30m` | the two snoozes |
+| `-grace` | `3s` | input that goes on this long pauses the warm-up |
+| `-busy` | `5s` | a paused warm-up goes on after this long without input |
+| `-short`, `-long` | `5m`, `30m` | the two snoozes; the short one also puts off a running warm-up |
 | `-lang` | `auto` | `auto`, `en` or `ru` |
 | `-log` | none | append a log of decisions to this file |
 
@@ -129,9 +142,17 @@ mouse input anywhere in the session. The tool checks it once a second.
 - Ten minutes with no input, a locked screen, or a gap that means the machine
   slept: you left, and the count starts over. Walking away while the reminder
   is up counts as the break too, and the window goes.
-- During the warm-up, only time with no input for at least five seconds comes
-  off the clock. The click on the start button does not count as use. While you
-  type, the window turns amber and says so.
+- During the warm-up the clock runs unless the computer is in use. Use is
+  input that goes on for three seconds; a run of input ends after three
+  seconds without any. Then the window turns amber and says so, the clock
+  goes back to where it was when that input began, and it starts again after
+  five seconds without input. The click on the start button and a single
+  touch after it do not count as use.
+- A warm-up put off is still owed: the reminder comes back when the snooze
+  ends, even if the hour is not up, and keeps coming back until the warm-up
+  is done or you have been away for ten minutes.
+- The move on screen follows the countdown: a new one every thirty seconds of
+  warm-up actually done, so a pause holds the move it caught.
 - The window never takes the keyboard focus (`WS_EX_NOACTIVATE`), so a
   keystroke meant for the editor cannot press one of its buttons. It ignores
   Alt+F4: it goes away through its buttons, or through Quit in the tray.

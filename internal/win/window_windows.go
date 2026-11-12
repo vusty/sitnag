@@ -5,9 +5,12 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/vusty/sitnag/internal/figure"
 )
 
 // Choice is the button the user pressed.
@@ -32,13 +35,18 @@ type Ask struct {
 	Hero    string // the big line in the calm look: how long at the computer
 	Caption string // under the hero, or under the title in the urgent look
 	Fact    string
-	Long    bool // whether the long snooze is on offer
+	Source  string // the study behind the fact
+	Long    bool   // whether the long snooze is on offer
 }
 
-// Countdown is the warm-up.
+// Countdown is the warm-up: the clock, a mannequin showing what to do, and
+// the short snooze as the one button, for a warm-up that has to wait.
 type Countdown struct {
 	Title    string
 	Clock    string
+	Move     int    // which move the mannequin does, a figure.Move
+	Name     string // what the move is called; empty moves the cue up into its place
+	Cue      string // how to do it, a line or two
 	Note     string
 	Paused   bool    // the keyboard or mouse is in use, the clock stands still
 	Progress float64 // 0 at the start, 1 at the end
@@ -62,9 +70,15 @@ const (
 	wmLButtonUp      = 0x0202
 	wmCaptureChanged = 0x0215
 	wmMouseLeave     = 0x02A3
+	wmTimer          = 0x0113
 	wmApp            = 0x8000
 
 	swHide = 0
+
+	// The mannequin moves at 25 frames a second: smooth enough, and a repaint
+	// of a card this size is cheap.
+	animTimer = 1
+	animEvery = 40 // milliseconds
 
 	swpNoActivate  = 0x10
 	swpShowWindow  = 0x40
@@ -84,6 +98,7 @@ const (
 	cleartypeQualty = 5
 
 	dtCenter     = 0x1
+	dtRight      = 0x2
 	dtVCenter    = 0x4
 	dtWordBreak  = 0x10
 	dtSingleLine = 0x20
@@ -172,10 +187,16 @@ type Window struct {
 	pressed  Choice
 	tracking bool
 	fonts    fonts
+
+	// How far into its move the mannequin is: moveHeld, plus the time since
+	// moveFrom while it is moving. It stands still while the warm-up is paused.
+	moving   bool
+	moveFrom time.Time
+	moveHeld time.Duration
 }
 
 type fonts struct {
-	title, hero, text, factHead, fact, clock, button uintptr
+	title, hero, text, factHead, fact, clock, move, note, button uintptr
 }
 
 // current is the one window, for the window procedure. Windows hands the
@@ -307,7 +328,9 @@ func (w *Window) makeFonts() {
 		text:     font(15, fwNormal),
 		factHead: font(11, fwBold),
 		fact:     font(15, fwNormal),
-		clock:    font(84, fwSemiBold),
+		clock:    font(68, fwSemiBold),
+		move:     font(18, fwSemiBold),
+		note:     font(11, fwNormal),
 		button:   font(13, fwSemiBold),
 	}
 }
@@ -345,6 +368,9 @@ func wndProc(hwnd, message, wParam, lParam uintptr) uintptr {
 	case wmMouseLeave:
 		w.tracking = false
 		w.setHover(0)
+		return 0
+	case wmTimer:
+		w.redraw()
 		return 0
 	case wmSetCursor:
 		if w.hover != 0 {
@@ -407,9 +433,16 @@ func (w *Window) apply() {
 		return
 	}
 	w.shown = v
-	if v.kind != asking {
-		w.hover, w.pressed = 0, 0
+	// The buttons change with the kind of view, not with the clock ticking
+	// inside one: a press must survive the second it happens in.
+	if v.kind != old.kind {
+		w.hover = 0
+		if w.pressed != 0 {
+			w.pressed = 0
+			procReleaseCapture.Call()
+		}
 	}
+	w.animate(old, v)
 
 	if v.kind == hidden {
 		procShowWindow.Call(uintptr(w.hwnd), swHide)
@@ -419,6 +452,37 @@ func (w *Window) apply() {
 	if old.kind == hidden {
 		w.center()
 	}
+}
+
+// animate keeps the mannequin's clock: a new move starts from its beginning,
+// and a paused warm-up holds the pose it was caught in.
+func (w *Window) animate(old, v view) {
+	moving := v.kind == countdown && !v.cd.Paused
+	switch {
+	case v.kind != countdown || old.kind != countdown || old.cd.Move != v.cd.Move:
+		w.moveHeld = 0
+		w.moveFrom = time.Now()
+	case w.moving && !moving:
+		w.moveHeld += time.Since(w.moveFrom)
+	case !w.moving && moving:
+		w.moveFrom = time.Now()
+	}
+	if moving == w.moving {
+		return
+	}
+	w.moving = moving
+	if moving {
+		procSetTimer.Call(uintptr(w.hwnd), animTimer, animEvery, 0)
+	} else {
+		procKillTimer.Call(uintptr(w.hwnd), animTimer)
+	}
+}
+
+func (w *Window) moveTime() time.Duration {
+	if !w.moving {
+		return w.moveHeld
+	}
+	return w.moveHeld + time.Since(w.moveFrom)
 }
 
 // center puts the window in the middle of the primary screen's work area, on
@@ -443,7 +507,11 @@ type button struct {
 
 func (w *Window) buttons() []button {
 	v := w.shown
-	if v.kind != asking {
+	switch v.kind {
+	case asking:
+	case countdown:
+		return []button{{Short, w.labels.Short, false, laterButton}}
+	default:
 		return nil
 	}
 	inner := cardW - 2*margin
@@ -543,35 +611,85 @@ func (w *Window) drawShapes(dc uintptr) {
 			g.roundRect(w.px(int(p.left)), w.px(int(p.top)), w.px(int(p.right-p.left)), w.px(int(p.bottom-p.top)), w.px(14), 0x38000000)
 			g.roundRect(w.px(int(p.left)+14), w.px(int(p.top)+18), w.px(5), w.px(int(p.bottom-p.top)-36), w.px(2), 0xFFF87171)
 		}
-		for _, b := range w.buttons() {
-			fill := uint32(0x29FFFFFF)
-			switch {
-			case b.primary && w.pressed == b.id:
-				fill = 0xFFE2E8F0
-			case b.primary && w.hover == b.id:
-				fill = 0xFFFFFFFF
-			case b.primary:
-				fill = 0xFFF1F5F9
-			case w.pressed == b.id:
-				fill = 0x52FFFFFF
-			case w.hover == b.id:
-				fill = 0x3DFFFFFF
-			}
-			g.roundRect(w.px(int(b.r.left)), w.px(int(b.r.top)), w.px(int(b.r.right-b.r.left)), w.px(buttonH), w.px(radius), fill)
-		}
 	case countdown:
-		x, y, full := w.px(margin+60), w.px(progressY), w.px(cardW-2*margin-120)
+		x, y, full := w.px(margin), w.px(progressY), w.px(textW)
 		g.roundRect(x, y, full, w.px(8), w.px(4), 0x33FFFFFF)
 		done := int(math.Round(float64(full) * min(1, max(0, v.cd.Progress))))
 		if done >= w.px(8) {
 			g.roundRect(x, y, done, w.px(8), w.px(4), 0xE6FFFFFF)
 		}
+		scale := figureScale * float64(w.dpi) / 96
+		w.drawFigure(g, figure.At(v.cd.Move, w.moveTime()), float64(w.px(figureX)), float64(w.px(figureFloor)), scale)
+	}
+
+	for _, b := range w.buttons() {
+		fill := uint32(0x29FFFFFF)
+		switch {
+		case b.primary && w.pressed == b.id:
+			fill = 0xFFE2E8F0
+		case b.primary && w.hover == b.id:
+			fill = 0xFFFFFFFF
+		case b.primary:
+			fill = 0xFFF1F5F9
+		case w.pressed == b.id:
+			fill = 0x52FFFFFF
+		case w.hover == b.id:
+			fill = 0x3DFFFFFF
+		}
+		g.roundRect(w.px(int(b.r.left)), w.px(int(b.r.top)), w.px(int(b.r.right-b.r.left)), w.px(int(b.r.bottom-b.r.top)), w.px(radius), fill)
 	}
 }
 
 var factPanel = rect{margin, 124, cardW - margin, 288}
 
-const progressY = 262
+// The warm-up: text in a column on the left, the mannequin on the right.
+const (
+	textW       = 470 // width of the text column
+	progressY   = 292
+	figureX     = cardW - margin - 138 // where the mannequin stands
+	figureFloor = 364
+	figureScale = 1.42 // pixels per unit: room for arms stretched overhead
+)
+
+// laterButton puts the warm-up off. It sits beside the clock, clear of the
+// row where the reminder has its buttons: the warm-up opens under the cursor
+// that just pressed "start", and a second click must not land on this.
+var laterButton = rect{margin + textW - 210, 107, margin + textW, 147}
+
+// drawFigure paints the mannequin standing at (x, floor), part by part from
+// the back. Each part gets a dark rim first, so an arm in front of the trunk
+// reads as an arm and not as more trunk.
+func (w *Window) drawFigure(g *graphics, f figure.Frame, x, floor, scale float64) {
+	g.ellipse(int(x-f.ShadowW*scale/2), int(floor-f.ShadowH*scale/2),
+		int(f.ShadowW*scale), int(f.ShadowH*scale), 0x30000000)
+	onScreen := func(s figure.Shape, pad float64) []float32 {
+		pts := s.Outline(pad)
+		out := make([]float32, len(pts))
+		for i := 0; i < len(pts); i += 2 {
+			out[i] = float32(x + pts[i]*scale)
+			out[i+1] = float32(floor - pts[i+1]*scale)
+		}
+		return out
+	}
+	for _, p := range f.Parts {
+		rim := make([][]float32, 0, len(p.Shapes))
+		body := make([][]float32, 0, len(p.Shapes))
+		for _, s := range p.Shapes {
+			rim = append(rim, onScreen(s, 1.7))
+			body = append(body, onScreen(s, 0))
+		}
+		g.fill(rim, 0x520B1B2B)
+		g.fill(body, figureTone(p.Tone))
+	}
+}
+
+// figureTone is white for the side of the body nearest the viewer, going to
+// a cool grey for the far side.
+func figureTone(tone float64) uint32 {
+	k := math.Pow(min(1, max(0, tone)), 0.7)
+	mix := func(far, near float64) uint32 { return uint32(math.Round(far + (near-far)*k)) }
+	return 0xFF000000 | mix(0x86, 0xFF)<<16 | mix(0x9E, 0xFF)<<8 | mix(0xB8, 0xFF)
+}
 
 // drawText is the GDI half: ClearType text on top of the shapes.
 func (w *Window) drawText(dc uintptr) {
@@ -594,21 +712,29 @@ func (w *Window) drawText(dc uintptr) {
 			w.text(dc, a.Caption, w.fonts.text, soft, in(margin, 82, right, 116), dtSingleLine|dtEllipsis)
 			p := factPanel
 			w.text(dc, w.labels.FactHeading, w.fonts.factHead, rgb(0xFCA5A5), in(int(p.left)+36, int(p.top)+18, int(p.right)-24, int(p.top)+42), dtSingleLine)
+			w.text(dc, a.Source, w.fonts.note, rgb(0xCBD5E1), in(int(p.left)+220, int(p.top)+18, int(p.right)-28, int(p.top)+42), dtSingleLine|dtRight|dtEllipsis)
 			w.text(dc, a.Fact, w.fonts.fact, white, in(int(p.left)+36, int(p.top)+46, int(p.right)-28, int(p.bottom)-14), dtWordBreak)
-		}
-		th := w.theme()
-		for _, b := range w.buttons() {
-			ink := white
-			if b.primary {
-				ink = argbToRef(th.ink)
-			}
-			w.text(dc, b.label, w.fonts.button, ink, in(int(b.r.left), int(b.r.top), int(b.r.right), int(b.r.bottom)), dtCenter|dtVCenter|dtSingleLine)
 		}
 	case countdown:
 		c := v.cd
-		w.text(dc, c.Title, w.fonts.title, white, in(margin, 30, right, 80), dtSingleLine|dtEllipsis)
-		w.text(dc, c.Clock, w.fonts.clock, white, in(margin, 92, right, 238), dtCenter|dtVCenter|dtSingleLine)
-		w.text(dc, c.Note, w.fonts.text, soft, in(margin+40, progressY+30, right-40, cardH-24), dtCenter|dtWordBreak)
+		col := margin + textW
+		w.text(dc, c.Title, w.fonts.title, white, in(margin, 30, col, 80), dtSingleLine|dtEllipsis)
+		w.text(dc, c.Clock, w.fonts.clock, white, in(margin-4, 68, col, 172), dtVCenter|dtSingleLine)
+		cueY := 214
+		if c.Name == "" {
+			cueY = 186
+		}
+		w.text(dc, c.Name, w.fonts.move, white, in(margin, 178, col, 212), dtSingleLine|dtEllipsis)
+		w.text(dc, c.Cue, w.fonts.text, soft, in(margin, cueY, col, 272), dtWordBreak)
+		w.text(dc, c.Note, w.fonts.note, soft, in(margin, progressY+22, col, cardH-20), dtWordBreak)
+	}
+
+	for _, b := range w.buttons() {
+		ink := white
+		if b.primary {
+			ink = argbToRef(w.theme().ink)
+		}
+		w.text(dc, b.label, w.fonts.button, ink, in(int(b.r.left), int(b.r.top), int(b.r.right), int(b.r.bottom)), dtCenter|dtVCenter|dtSingleLine)
 	}
 }
 
