@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 
 	"github.com/vusty/sitnag/internal/figure"
+	"github.com/vusty/sitnag/internal/history"
 	"github.com/vusty/sitnag/internal/sit"
 	"github.com/vusty/sitnag/internal/tray"
 	"github.com/vusty/sitnag/internal/win"
@@ -51,6 +52,11 @@ func run(args []string) error {
 	cfg := sit.DefaultConfig()
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	logPath := fs.String("log", "", "append the log to this file instead of stdout")
+	defaultHistory := ""
+	if dir, err := os.UserCacheDir(); err == nil {
+		defaultHistory = filepath.Join(dir, "sitnag", "history.jsonl")
+	}
+	histPath := fs.String("history", defaultHistory, "append the event history to this file, for statistics; empty turns it off")
 	langFlag := fs.String("lang", "auto", "auto, ru or en; auto follows the first language in the Windows language list")
 	fs.DurationVar(&cfg.RemindAfter, "remind", cfg.RemindAfter, "time at the computer before the reminder")
 	fs.DurationVar(&cfg.HardLimit, "limit", cfg.HardLimit, "past this only the short snooze is offered")
@@ -97,6 +103,17 @@ func run(args []string) error {
 		return nil
 	}
 
+	// Opened only past the check above, so a second copy cannot write to it.
+	if *histPath != "" {
+		h, err := history.Open(*histPath)
+		if err != nil {
+			logf("history off: %v", err)
+		} else {
+			defer h.Close()
+			hist = h
+		}
+	}
+
 	win.DPIAware()
 	choices := make(chan win.Choice, 4)
 	breakNow := make(chan struct{}, 1)
@@ -112,6 +129,10 @@ func run(args []string) error {
 
 	logf("start: remind after %v, limit %v, away %v, break %v (paused by %v of input, resumed %v after it), snooze %v/%v, language %s",
 		cfg.RemindAfter, cfg.HardLimit, cfg.Away, cfg.Break, cfg.Grace, cfg.Busy, cfg.ShortSnooze, cfg.LongSnooze, t.lang)
+	if hist != nil {
+		logf("history: %s", *histPath)
+	}
+	record(history.Event{Time: time.Now(), Kind: history.Start})
 	tray.Run(tray.Options{
 		Quit:     t.quit,
 		BreakNow: t.breakNow,
@@ -124,7 +145,10 @@ func run(args []string) error {
 		},
 		Status:  t.trayStarting,
 		OnReady: func() { go loop(sit.New(cfg), cfg, w, choices, breakNow) },
-		OnQuit:  func() { logf("quit") },
+		OnQuit: func() {
+			logf("quit")
+			record(history.Event{Time: time.Now(), Kind: history.Quit})
+		},
 	})
 	return nil
 }
@@ -148,22 +172,28 @@ func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Ch
 		case sit.Ask:
 			fact = (fact + 1) % len(facts)
 			logf("reminder: at the computer for %s", human(state.Sitting(now)))
+			record(history.Event{Time: now, Kind: history.Remind, Sat: state.Sitting(now)})
 			win.Beep(win.Attention)
 		case sit.Left:
 			logf("left with the reminder up after %s: counted as the break", human(before))
+			record(history.Event{Time: now, Kind: history.Left, Sat: before})
 		case sit.BreakDone:
 			logf("warm-up done")
+			record(history.Event{Time: now, Kind: history.WarmupDone})
 			win.Beep(win.Done)
 		default:
 			if before > 0 && state.Sitting(now) == 0 {
 				logf("away after %s at the computer: count restarted", human(before))
+				record(history.Event{Time: now, Kind: history.Away, Sat: before})
 			}
 		}
 		if p := state.BreakPaused(); p != paused {
 			if p {
 				logf("warm-up paused at %s left: the computer is in use", clock(state.BreakLeft()))
+				record(history.Event{Time: now, Kind: history.WarmupPause, Left: state.BreakLeft()})
 			} else if state.Mode() == sit.Breaking {
 				logf("warm-up resumed")
+				record(history.Event{Time: now, Kind: history.WarmupResume, Left: state.BreakLeft()})
 			}
 			paused = p
 		}
@@ -177,23 +207,28 @@ func loop(state *sit.State, cfg sit.Config, w *win.Window, choices <-chan win.Ch
 			now := time.Now().Round(0)
 			if state.BreakNow(now) {
 				logf("warm-up started from the tray after %s at the computer", human(state.Sitting(now)))
+				record(history.Event{Time: now, Kind: history.WarmupStart, Sat: state.Sitting(now), From: history.FromTray})
 			}
 		case c := <-choices:
 			now := time.Now().Round(0)
-			sat := human(state.Sitting(now))
+			satD := state.Sitting(now)
+			sat := human(satD)
 			switch c {
 			case win.Start:
 				if state.StartBreak(now) {
 					logf("warm-up started after %s at the computer", sat)
+					record(history.Event{Time: now, Kind: history.WarmupStart, Sat: satD, From: history.FromReminder})
 				}
 			case win.Short, win.Long:
 				// The short snooze is also the button on the warm-up itself.
-				left := clock(state.BreakLeft())
+				leftD := state.BreakLeft()
 				switch {
 				case state.Snooze(now, c == win.Long):
 					logf("snoozed until %s after %s at the computer", state.SnoozedUntil().Format("15:04:05"), sat)
+					record(history.Event{Time: now, Kind: history.Snooze, Sat: satD, Len: state.SnoozedUntil().Sub(now)})
 				case c == win.Short && state.PutOff(now):
-					logf("warm-up put off at %s left: the reminder comes back at %s", left, state.SnoozedUntil().Format("15:04:05"))
+					logf("warm-up put off at %s left: the reminder comes back at %s", clock(leftD), state.SnoozedUntil().Format("15:04:05"))
+					record(history.Event{Time: now, Kind: history.WarmupPutOff, Left: leftD, Len: state.SnoozedUntil().Sub(now)})
 				}
 			}
 		}
@@ -360,4 +395,19 @@ var logOut io.Writer = os.Stdout
 
 func logf(format string, args ...any) {
 	fmt.Fprintf(logOut, "%s  %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
+}
+
+// hist is where record writes; nil when -history is empty or the file could
+// not be opened.
+var hist *history.Writer
+
+// record adds an event to the history. A failure only goes to the log: the
+// reminder matters more than its statistics.
+func record(e history.Event) {
+	if hist == nil {
+		return
+	}
+	if err := hist.Add(e); err != nil {
+		logf("history: %v", err)
+	}
 }

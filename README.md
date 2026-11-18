@@ -105,7 +105,7 @@ sitting. The log is the only way to see afterwards what it decided and when.
 ```
 
 Then choose Quit in the tray menu and delete `%LOCALAPPDATA%\Programs\sitnag`
-and the log folder `%LOCALAPPDATA%\sitnag`.
+and `%LOCALAPPDATA%\sitnag`, the folder with the log and the history.
 
 ## Settings
 
@@ -124,6 +124,7 @@ the new flags, then restart Sitnag from the tray.
 | `-short`, `-long` | `5m`, `30m` | the two snoozes; the short one also puts off a running warm-up |
 | `-lang` | `auto` | `auto`, `en` or `ru` |
 | `-log` | none | append a log of decisions to this file |
+| `-history` | `%LOCALAPPDATA%\sitnag\history.jsonl` | append the history of events to this file; `-history=` turns it off |
 
 For example, a reminder every 45 minutes:
 
@@ -133,6 +134,27 @@ For example, a reminder every 45 minutes:
 
 Small values make a quick end-to-end check:
 `sitnag.exe run -remind 15s -limit 45s -break 10s -short 10s -long 30s`.
+
+## History
+
+Every reminder, snooze and warm-up also goes into the history file, one JSON
+object per line, so statistics can be built from it later. The log is for
+reading and changes with the interface language; the history keeps durations
+in seconds:
+
+```json
+{"t":"2026-11-18T12:12:33+05:00","ev":"snooze","sat":3604,"len":1800}
+{"t":"2026-11-18T12:42:33+05:00","ev":"warmup_start","sat":5404,"from":"reminder"}
+{"t":"2026-11-18T12:47:50+05:00","ev":"warmup_done"}
+```
+
+`sat` is how long you had been at the computer, `len` how long a snooze
+hides the reminder, `left` what remained of the warm-up. The events are
+`start`, `quit`, `remind`, `snooze`, `left` (walked away with the reminder
+up), `away` (a break without one), and `warmup_start`, `warmup_pause`,
+`warmup_resume`, `warmup_putoff`, `warmup_done`; the comments in
+[internal/history](internal/history/history.go) say which fields each one
+carries. The file never leaves the computer.
 
 ## How it decides
 
@@ -165,7 +187,7 @@ scrolling during the warm-up reads as being away.
 
 ## Development
 
-    go test ./internal/sit          the decision logic; runs on any OS
+    go test ./internal/sit ./internal/history    the decision logic and the history file; run on any OS
     GOOS=windows go vet ./...
 
 The window paints itself on a gradient: GDI+ draws the shapes, GDI the text.
